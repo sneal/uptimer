@@ -31,6 +31,7 @@ import (
 )
 
 func main() {
+
 	logger := log.New(os.Stdout, "\n[UPTIMER] ", log.Ldate|log.Ltime|log.LUTC)
 
 	configPath := flag.String("configFile", "", "Path to the config file")
@@ -64,13 +65,13 @@ func main() {
 	logger.Println("Finished building included app")
 
 	logger.Println("Building included syslog sink app...")
-	_, err = compileIncludedApp("syslogSink")
+	sinkAppPath, err := compileIncludedApp("syslogSink")
 	if err != nil {
 		logger.Println("Failed to build included syslog sink app: ", err)
 	}
 	logger.Println("Finished building included syslog sink app")
 
-	orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, err := createTmpDirs()
+	orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, sinkTmpDir, err := createTmpDirs()
 	if err != nil {
 		logger.Println("Failed to create temp dir:", err)
 		performMeasurements = false
@@ -79,7 +80,7 @@ func main() {
 	bufferedRunner, runnerOutBuf, runnerErrBuf := createBufferedRunner()
 
 	pushCmdGenerator := cfCmdGenerator.New(pushTmpDir)
-	pushWorkflow, pushOrg := createWorkflow(cfg.CF, appPath)
+	pushWorkflow, pushOrg, _ := createWorkflow(cfg.CF, appPath, "./app")
 	logger.Printf("Setting up push workflow with org %s ...", pushOrg)
 	if err := bufferedRunner.RunInSequence(pushWorkflow.Setup(pushCmdGenerator)...); err != nil {
 		logBufferedRunnerFailure(logger, "push workflow setup", err, runnerOutBuf, runnerErrBuf)
@@ -88,8 +89,34 @@ func main() {
 		logger.Println("Finished setting up push workflow")
 	}
 
+	sinkCmdGenerator := cfCmdGenerator.New(sinkTmpDir)
+	sinkWorkflow, sinkOrg, _ := createWorkflow(cfg.CF, sinkAppPath, "./syslogSink")
+	logger.Printf("Setting up sink workflow with org %s ...", sinkOrg)
+	err = bufferedRunner.RunInSequence(
+		append(append(
+			sinkWorkflow.Setup(sinkCmdGenerator),
+			sinkWorkflow.Push(sinkCmdGenerator)...),
+			sinkWorkflow.MapRoute(sinkCmdGenerator)...)...)
+	if err != nil {
+		logBufferedRunnerFailure(logger, "sink workflow setup", err, runnerOutBuf, runnerErrBuf)
+		performMeasurements = false
+	} else {
+		logger.Println("Finished setting up sink workflow")
+	}
+
 	orcCmdGenerator := cfCmdGenerator.New(orcTmpDir)
-	orcWorkflow, orcOrg := createWorkflow(cfg.CF, appPath)
+	orcWorkflow, orcOrg, _ := createWorkflow(cfg.CF, appPath, "./app")
+
+	// map a route to the sink (this needs to happen in the space with the sink app)
+
+	// These need to happen in the space with the main app:
+	// create a user-provided service with the sink route
+	// bind the user-provided service to the main app?
+	// restage the app
+
+	// ...
+	// add a "recent logs" measurement targeted at the sink with a period of 30 seconds
+
 	measurements := createMeasurements(
 		logger,
 		orcWorkflow,
@@ -140,25 +167,29 @@ func loadConfig(configPath string) (*config.Config, error) {
 	return cfg, nil
 }
 
-func createTmpDirs() (string, string, string, string, error) {
+func createTmpDirs() (string, string, string, string, string, error) {
 	orcTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
 	}
 	recentLogsTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
 	}
 	streamingLogsTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
 	}
 	pushTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", err
+		return "", "", "", "", "", err
+	}
+	sinkTmpDir, err := ioutil.TempDir("", "uptimer")
+	if err != nil {
+		return "", "", "", "", "", err
 	}
 
-	return orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, nil
+	return orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, sinkTmpDir, nil
 }
 
 func compileIncludedApp(appName string) (string, error) {
@@ -179,18 +210,21 @@ func compileIncludedApp(appName string) (string, error) {
 	return appPath, err
 }
 
-func createWorkflow(cfc *config.Cf, appPath string) (cfWorkflow.CfWorkflow, string) {
-	workflowOrg := fmt.Sprintf("uptimer-org-%s", uuid.NewV4().String())
+func createWorkflow(cfc *config.Cf, appPath, appCommand string) (cfWorkflow.CfWorkflow, string, string) {
+	org := fmt.Sprintf("uptimer-org-%s", uuid.NewV4().String())
+	app := fmt.Sprintf("uptimer-app-%s", uuid.NewV4().String())
 
 	return cfWorkflow.New(
 			cfc,
-			workflowOrg,
+			org,
 			fmt.Sprintf("uptimer-space-%s", uuid.NewV4().String()),
 			fmt.Sprintf("uptimer-quota-%s", uuid.NewV4().String()),
-			fmt.Sprintf("uptimer-app-%s", uuid.NewV4().String()),
+			app,
 			appPath,
+			appCommand,
 		),
-		workflowOrg
+		org,
+		app
 }
 
 func createMeasurements(

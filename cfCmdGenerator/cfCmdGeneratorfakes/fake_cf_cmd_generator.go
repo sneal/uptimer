@@ -169,11 +169,12 @@ type FakeCfCmdGenerator struct {
 	streamLogsReturnsOnCall map[int]struct {
 		result1 cmdStartWaiter.CmdStartWaiter
 	}
-	MapRouteStub        func(appName, domain string) cmdStartWaiter.CmdStartWaiter
+	MapRouteStub        func(appName, domain string, port int) cmdStartWaiter.CmdStartWaiter
 	mapRouteMutex       sync.RWMutex
 	mapRouteArgsForCall []struct {
 		appName string
 		domain  string
+		port    int
 	}
 	mapRouteReturns struct {
 		result1 cmdStartWaiter.CmdStartWaiter
@@ -891,17 +892,18 @@ func (fake *FakeCfCmdGenerator) StreamLogsReturnsOnCall(i int, result1 cmdStartW
 	}{result1}
 }
 
-func (fake *FakeCfCmdGenerator) MapRoute(appName string, domain string) cmdStartWaiter.CmdStartWaiter {
+func (fake *FakeCfCmdGenerator) MapRoute(appName string, domain string, port int) cmdStartWaiter.CmdStartWaiter {
 	fake.mapRouteMutex.Lock()
 	ret, specificReturn := fake.mapRouteReturnsOnCall[len(fake.mapRouteArgsForCall)]
 	fake.mapRouteArgsForCall = append(fake.mapRouteArgsForCall, struct {
 		appName string
 		domain  string
-	}{appName, domain})
-	fake.recordInvocation("MapRoute", []interface{}{appName, domain})
+		port    int
+	}{appName, domain, port})
+	fake.recordInvocation("MapRoute", []interface{}{appName, domain, port})
 	fake.mapRouteMutex.Unlock()
 	if fake.MapRouteStub != nil {
-		return fake.MapRouteStub(appName, domain)
+		return fake.MapRouteStub(appName, domain, port)
 	}
 	if specificReturn {
 		return ret.result1
@@ -915,10 +917,10 @@ func (fake *FakeCfCmdGenerator) MapRouteCallCount() int {
 	return len(fake.mapRouteArgsForCall)
 }
 
-func (fake *FakeCfCmdGenerator) MapRouteArgsForCall(i int) (string, string) {
+func (fake *FakeCfCmdGenerator) MapRouteArgsForCall(i int) (string, string, int) {
 	fake.mapRouteMutex.RLock()
 	defer fake.mapRouteMutex.RUnlock()
-	return fake.mapRouteArgsForCall[i].appName, fake.mapRouteArgsForCall[i].domain
+	return fake.mapRouteArgsForCall[i].appName, fake.mapRouteArgsForCall[i].domain, fake.mapRouteArgsForCall[i].port
 }
 
 func (fake *FakeCfCmdGenerator) MapRouteReturns(result1 cmdStartWaiter.CmdStartWaiter) {

@@ -21,6 +21,9 @@ type Cf struct {
 	AppDomain     string `json:"app_domain"`
 	AdminUser     string `json:"admin_user"`
 	AdminPassword string `json:"admin_password"`
+
+	TCPDomain     string `json:"tcp_domain"`
+	AvailablePort int    `json:"available_port"`
 }
 
 type AllowedFailures struct {
