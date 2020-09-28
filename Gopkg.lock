@@ -27,7 +27,7 @@
 
 [[projects]]
   digest = "1:c6329733387205927ecb2d992cffcdc8c8fda91ef23919d6f514ca62fdfe2465"
-  name = "github.com/cloudfoundry/goshims"
+  name = "code.cloudfoundry.org/goshims"
   packages = ["ioutilshim"]
   pruneopts = ""
   revision = "8d5fe86a4075479f79dcdb7c60d4618a99da7093"
@@ -113,7 +113,7 @@
   input-imports = [
     "code.cloudfoundry.org/rfc5424",
     "github.com/benbjohnson/clock",
-    "github.com/cloudfoundry/goshims/ioutilshim",
+    "code.cloudfoundry.org/goshims/ioutilshim",
     "github.com/onsi/ginkgo",
     "github.com/onsi/gomega",
     "github.com/onsi/gomega/gexec",

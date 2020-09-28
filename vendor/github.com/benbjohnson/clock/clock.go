@@ -9,7 +9,7 @@ import (
 // Clock represents an interface to the functions in the standard library time
 // package. Two implementations are available in the clock package. The first
 // is a real-time clock which simply wraps the time package's functions. The
-// second is a mock clock which will only make forward progress when
+// second is a mock clock which will only change when
 // programmatically adjusted.
 type Clock interface {
 	After(d time.Duration) <-chan time.Time
@@ -54,7 +54,7 @@ func (c *clock) Timer(d time.Duration) *Timer {
 	return &Timer{C: t.C, timer: t}
 }
 
-// Mock represents a mock clock that only moves forward programmically.
+// Mock represents a mock clock that only moves forward programmatically.
 // It can be preferable to a real-time clock when testing time-based functionality.
 type Mock struct {
 	mu     sync.Mutex
@@ -68,7 +68,7 @@ func NewMock() *Mock {
 	return &Mock{now: time.Unix(0, 0)}
 }
 
-// Add moves the current time of the mock clock forward by the duration.
+// Add moves the current time of the mock clock forward by the specified duration.
 // This should only be called from a single goroutine at a time.
 func (m *Mock) Add(d time.Duration) {
 	// Calculate the final current time.
@@ -86,7 +86,7 @@ func (m *Mock) Add(d time.Duration) {
 	m.now = t
 	m.mu.Unlock()
 
-	// Give a small buffer to make sure the other goroutines get handled.
+	// Give a small buffer to make sure that other goroutines get handled.
 	gosched()
 }
 
@@ -105,13 +105,13 @@ func (m *Mock) Set(t time.Time) {
 	m.now = t
 	m.mu.Unlock()
 
-	// Give a small buffer to make sure the other goroutines get handled.
+	// Give a small buffer to make sure that other goroutines get handled.
 	gosched()
 }
 
 // runNextTimer executes the next timer in chronological order and moves the
 // current time to the timer's next tick time. The next time is not executed if
-// it's next time if after the max time. Returns true if a timer is executed.
+// its next time is after the max time. Returns true if a timer was executed.
 func (m *Mock) runNextTimer(max time.Time) bool {
 	m.mu.Lock()
 
@@ -161,7 +161,7 @@ func (m *Mock) Now() time.Time {
 	return m.now
 }
 
-// Since returns time since the mock clocks wall time.
+// Since returns time since the mock clock's wall time.
 func (m *Mock) Since(t time.Time) time.Duration {
 	return m.Now().Sub(t)
 }
@@ -211,8 +211,6 @@ func (m *Mock) Timer(d time.Duration) *Timer {
 }
 
 func (m *Mock) removeClockTimer(t clockTimer) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	for i, timer := range m.timers {
 		if timer == t {
 			copy(m.timers[i:], m.timers[i+1:])
@@ -255,9 +253,11 @@ func (t *Timer) Stop() bool {
 		return t.timer.Stop()
 	}
 
+	t.mock.mu.Lock()
 	registered := !t.stopped
 	t.mock.removeClockTimer((*internalTimer)(t))
 	t.stopped = true
+	t.mock.mu.Unlock()
 	return registered
 }
 
@@ -267,13 +267,15 @@ func (t *Timer) Reset(d time.Duration) bool {
 		return t.timer.Reset(d)
 	}
 
+	t.mock.mu.Lock()
 	t.next = t.mock.now.Add(d)
+	defer t.mock.mu.Unlock()
+
 	registered := !t.stopped
 	if t.stopped {
-		t.mock.mu.Lock()
 		t.mock.timers = append(t.mock.timers, (*internalTimer)(t))
-		t.mock.mu.Unlock()
 	}
+
 	t.stopped = false
 	return registered
 }
@@ -282,6 +284,7 @@ type internalTimer Timer
 
 func (t *internalTimer) Next() time.Time { return t.next }
 func (t *internalTimer) Tick(now time.Time) {
+	t.mock.mu.Lock()
 	if t.fn != nil {
 		t.fn()
 	} else {
@@ -289,6 +292,7 @@ func (t *internalTimer) Tick(now time.Time) {
 	}
 	t.mock.removeClockTimer((*internalTimer)(t))
 	t.stopped = true
+	t.mock.mu.Unlock()
 	gosched()
 }
 
@@ -307,7 +311,9 @@ func (t *Ticker) Stop() {
 	if t.ticker != nil {
 		t.ticker.Stop()
 	} else {
+		t.mock.mu.Lock()
 		t.mock.removeClockTimer((*internalTicker)(t))
+		t.mock.mu.Unlock()
 	}
 }
 
