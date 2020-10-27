@@ -32,12 +32,11 @@ type CfCmdGenerator interface {
 }
 
 type cfCmdGenerator struct {
-	cfHome                string
-	useBuildpackDetection bool
+	cfHome string
 }
 
-func New(cfHome string, useBuildpackDetection bool) CfCmdGenerator {
-	return &cfCmdGenerator{cfHome: cfHome, useBuildpackDetection: useBuildpackDetection}
+func New(cfHome string) CfCmdGenerator {
+	return &cfCmdGenerator{cfHome: cfHome}
 }
 
 func (c *cfCmdGenerator) addCfHome(cmd *exec.Cmd) *exec.Cmd {
@@ -120,10 +119,6 @@ func (c *cfCmdGenerator) Push(name, path string, instances int) cmdStartWaiter.C
 		"push", name,
 		"-f", "manifest.yml",
 		"-i", strconv.Itoa(instances),
-	}
-
-	if c.useBuildpackDetection == false {
-		args = append(args, "-b", "go_buildpack")
 	}
 
 	cmd := exec.Command("cf", args...)

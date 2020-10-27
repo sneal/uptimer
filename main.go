@@ -31,6 +31,7 @@ import (
 	"github.com/cloudfoundry/uptimer/orchestrator"
 	"github.com/cloudfoundry/uptimer/syslogSink"
 	"github.com/cloudfoundry/uptimer/version"
+	"github.com/cloudfoundry/uptimer/winapp"
 )
 
 func main() {
@@ -67,7 +68,7 @@ func main() {
 	performMeasurements := true
 
 	logger.Println("Preparing included app...")
-	appPath, err := prepareIncludedApp("app", app.Source)
+	appPath, err := prepareIncludedApp("app", app.Source, *useBuildpackDetection)
 	if err != nil {
 		logger.Println("Failed to prepare included app: ", err)
 		performMeasurements = false
@@ -75,16 +76,25 @@ func main() {
 	logger.Println("Finished preparing included app")
 	defer os.RemoveAll(appPath)
 
+	logger.Println("Preparing included Windows app...")
+	winAppPath, err := prepareIncludedWinApp("winapp", *useBuildpackDetection)
+	if err != nil {
+		logger.Println("Failed to prepare included Windows app: ", err)
+		performMeasurements = false
+	}
+	logger.Println("Finished preparing included Windows app")
+	defer os.RemoveAll(winAppPath)
+
 	var sinkAppPath string
 	if cfg.OptionalTests.RunAppSyslogAvailability {
 		logger.Println("Preparing included syslog sink app...")
-		sinkAppPath, err = prepareIncludedApp("syslogSink", syslogSink.Source)
+		sinkAppPath, err = prepareIncludedApp("syslogSink", syslogSink.Source, *useBuildpackDetection)
 		if err != nil {
 			logger.Println("Failed to prepare included syslog sink app: ", err)
 		}
 		logger.Println("Finished preparing included syslog sink app")
 	}
-	orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, sinkTmpDir, err := createTmpDirs()
+	orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, sinkTmpDir, winPushTmpDir, err := createTmpDirs()
 	if err != nil {
 		logger.Println("Failed to create temp dirs:", err)
 		performMeasurements = false
@@ -92,7 +102,7 @@ func main() {
 
 	bufferedRunner, runnerOutBuf, runnerErrBuf := createBufferedRunner()
 
-	pushCmdGenerator := cfCmdGenerator.New(pushTmpDir, *useBuildpackDetection)
+	pushCmdGenerator := cfCmdGenerator.New(pushTmpDir)
 	pushWorkflow := createWorkflow(cfg.CF, appPath)
 	logger.Printf("Setting up push workflow with org %s ...", pushWorkflow.Org())
 	if err := bufferedRunner.RunInSequence(pushWorkflow.Setup(pushCmdGenerator)...); err != nil {
@@ -112,10 +122,30 @@ func main() {
 		)
 	}
 
+	winPushCmdGenerator := cfCmdGenerator.New(winPushTmpDir)
+	winPushWorkflow := createWorkflow(cfg.CF, winAppPath)
+	logger.Printf("Setting up Windows push workflow with org %s ...", winPushWorkflow.Org())
+	if err := bufferedRunner.RunInSequence(winPushWorkflow.Setup(winPushCmdGenerator)...); err != nil {
+		logBufferedRunnerFailure(logger, "push Windows workflow setup", err, runnerOutBuf, runnerErrBuf)
+		performMeasurements = false
+	} else {
+		logger.Println("Finished setting up Windows push workflow")
+	}
+	winPushWorkflowGeneratorFunc := func() cfWorkflow.CfWorkflow {
+		return cfWorkflow.New(
+			cfg.CF,
+			winPushWorkflow.Org(),
+			winPushWorkflow.Space(),
+			winPushWorkflow.Quota(),
+			fmt.Sprintf("uptimer-app-%s", uuid.NewV4().String()),
+			appPath,
+		)
+	}
+
 	var sinkWorkflow cfWorkflow.CfWorkflow
 	var sinkCmdGenerator cfCmdGenerator.CfCmdGenerator
 	if cfg.OptionalTests.RunAppSyslogAvailability {
-		sinkCmdGenerator = cfCmdGenerator.New(sinkTmpDir, *useBuildpackDetection)
+		sinkCmdGenerator = cfCmdGenerator.New(sinkTmpDir)
 		sinkWorkflow = createWorkflow(cfg.CF, sinkAppPath)
 		logger.Printf("Setting up sink workflow with org %s ...", sinkWorkflow.Org())
 		err = bufferedRunner.RunInSequence(
@@ -131,7 +161,7 @@ func main() {
 		}
 	}
 
-	orcCmdGenerator := cfCmdGenerator.New(orcTmpDir, *useBuildpackDetection)
+	orcCmdGenerator := cfCmdGenerator.New(orcTmpDir)
 	orcWorkflow := createWorkflow(cfg.CF, appPath)
 
 	authFailedRetryFunc := func(stdOut, stdErr string) bool {
@@ -144,9 +174,11 @@ func main() {
 		logger,
 		orcWorkflow,
 		pushWorkflowGeneratorFunc,
-		cfCmdGenerator.New(recentLogsTmpDir, *useBuildpackDetection),
-		cfCmdGenerator.New(streamingLogsTmpDir, *useBuildpackDetection),
+		winPushWorkflowGeneratorFunc,
+		cfCmdGenerator.New(recentLogsTmpDir),
+		cfCmdGenerator.New(streamingLogsTmpDir),
 		pushCmdGenerator,
+		winPushCmdGenerator,
 		cfg.AllowedFailures,
 		authFailedRetryFunc,
 	)
@@ -190,6 +222,8 @@ func main() {
 		logger,
 		pushWorkflow,
 		pushCmdGenerator,
+		winPushWorkflow,
+		winPushCmdGenerator,
 		sinkWorkflow,
 		sinkCmdGenerator,
 		bufferedRunner,
@@ -201,43 +235,49 @@ func main() {
 	os.Exit(exitCode)
 }
 
-func createTmpDirs() (string, string, string, string, string, error) {
+func createTmpDirs() (string, string, string, string, string, string, error) {
 	orcTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
 	recentLogsTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
 	streamingLogsTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
 	pushTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", "", err
+		return "", "", "", "", "", "", err
 	}
 	sinkTmpDir, err := ioutil.TempDir("", "uptimer")
 	if err != nil {
-		return "", "", "", "", "", err
+		return "", "", "", "", "", "", err
+	}
+	winTmpDir, err := ioutil.TempDir("", "uptimer")
+	if err != nil {
+		return "", "", "", "", "", "", err
 	}
 
-	return orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, sinkTmpDir, nil
+	return orcTmpDir, recentLogsTmpDir, streamingLogsTmpDir, pushTmpDir, sinkTmpDir, winTmpDir, nil
 }
 
-func prepareIncludedApp(name, source string) (string, error) {
+func prepareIncludedApp(name, source string, useBuildpackDetection bool) (string, error) {
 	dir, err := ioutil.TempDir("", "uptimer-sample-*")
 	if err != nil {
 		return "", err
 	}
 
-	if err := ioutil.WriteFile(filepath.Join(dir, "main.go"), []byte(app.Source), 0644); err != nil {
+	fmt.Printf("Creating go app in %s", dir)
+
+	if err := ioutil.WriteFile(filepath.Join(dir, "main.go"), []byte(source), 0644); err != nil {
 		os.RemoveAll(dir)
 		return "", err
 	}
 
-	manifest := goManifest(name)
+	manifest := goManifest(name, useBuildpackDetection)
 	if err := ioutil.WriteFile(filepath.Join(dir, "manifest.yml"), []byte(manifest), 0644); err != nil {
 		os.RemoveAll(dir)
 		return "", err
@@ -246,13 +286,69 @@ func prepareIncludedApp(name, source string) (string, error) {
 	return dir, nil
 }
 
-func goManifest(appName string) string {
-	return fmt.Sprintf(`applications:
+func prepareIncludedWinApp(name string, useBuildpackDetection bool) (string, error) {
+	dir, err := ioutil.TempDir("", "uptimer-sample-*")
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Printf("Creating Windows app in %s", dir)
+
+	if err := ioutil.WriteFile(filepath.Join(dir, "Web.config"), []byte(winapp.WebConfig), 0644); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+
+	if err := ioutil.WriteFile(filepath.Join(dir, "Global.asax"), []byte(winapp.GlobalAsax), 0644); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+
+	if err := ioutil.WriteFile(filepath.Join(dir, "Default.aspx.cs"), []byte(winapp.DefaultAspxCs), 0644); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+
+	if err := ioutil.WriteFile(filepath.Join(dir, "Default.aspx"), []byte(winapp.DefaultAspx), 0644); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+
+	manifest := winManifest(name, useBuildpackDetection)
+	if err := ioutil.WriteFile(filepath.Join(dir, "manifest.yml"), []byte(manifest), 0644); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+
+	return dir, nil
+}
+
+func winManifest(appName string, useBuildpackDetection bool) string {
+	m := fmt.Sprintf(`applications:
+- name: %s
+  memory: 1024m
+  stack: windows
+`, appName)
+
+	if !useBuildpackDetection {
+		m += "  buildpacks:  - hwc_buildpack\n"
+	}
+	return m
+}
+
+func goManifest(appName string, useBuildpackDetection bool) string {
+	m := fmt.Sprintf(`applications:
 - name: %s
   memory: 64M
   disk: 16M
   env:
-    GOPACKAGENAME: github.com/cloudfoundry/uptimer/%s`, appName, appName)
+    GOPACKAGENAME: github.com/cloudfoundry/uptimer/%s
+`, appName, appName)
+
+	if !useBuildpackDetection {
+		m += "  buildpacks:\n  - go_buildpack\n"
+	}
+	return m
 }
 
 func createWorkflow(cfc *config.Cf, appPath string) cfWorkflow.CfWorkflow {
@@ -271,7 +367,10 @@ func createMeasurements(
 	logger *log.Logger,
 	orcWorkflow cfWorkflow.CfWorkflow,
 	pushWorkFlowGeneratorFunc func() cfWorkflow.CfWorkflow,
-	recentLogsCmdGenerator, streamingLogsCmdGenerator, pushCmdGenerator cfCmdGenerator.CfCmdGenerator,
+	winPushWorkFlowGeneratorFunc func() cfWorkflow.CfWorkflow,
+	recentLogsCmdGenerator, streamingLogsCmdGenerator,
+	pushCmdGenerator cfCmdGenerator.CfCmdGenerator,
+	winPushCmdGenerator cfCmdGenerator.CfCmdGenerator,
 	allowedFailures config.AllowedFailures,
 	authFailedRetryFunc func(stdOut, stdErr string) bool,
 ) []measurement.Measurement {
@@ -312,6 +411,20 @@ func createMeasurements(
 		pushRunnerErrBuf,
 	)
 
+	winPushRunner, winPushRunnerOutBuf, winPushRunnerErrBuf := createBufferedRunner()
+	winAppPushabilityMeasurement := measurement.NewAppPushability(
+		func() []cmdStartWaiter.CmdStartWaiter {
+			w := winPushWorkFlowGeneratorFunc()
+			return append(
+				w.Push(winPushCmdGenerator),
+				w.Delete(winPushCmdGenerator)...,
+			)
+		},
+		winPushRunner,
+		winPushRunnerOutBuf,
+		winPushRunnerErrBuf,
+	)
+
 	httpAvailabilityMeasurement := measurement.NewHTTPAvailability(
 		orcWorkflow.AppUrl(),
 		&http.Client{
@@ -338,6 +451,15 @@ func createMeasurements(
 			clock,
 			time.Minute,
 			appPushabilityMeasurement,
+			measurement.NewResultSet(),
+			allowedFailures.AppPushability,
+			authFailedRetryFunc,
+		),
+		measurement.NewPeriodic(
+			logger,
+			clock,
+			time.Minute,
+			winAppPushabilityMeasurement,
 			measurement.NewResultSet(),
 			allowedFailures.AppPushability,
 			authFailedRetryFunc,
@@ -423,6 +545,8 @@ func tearDown(
 	logger *log.Logger,
 	pushWorkflow cfWorkflow.CfWorkflow,
 	pushCmdGenerator cfCmdGenerator.CfCmdGenerator,
+	winPushWorkflow cfWorkflow.CfWorkflow,
+	winPushCmdGenerator cfCmdGenerator.CfCmdGenerator,
 	sinkWorkflow cfWorkflow.CfWorkflow,
 	sinkCmdGenerator cfCmdGenerator.CfCmdGenerator,
 	runner cmdRunner.CmdRunner,
@@ -434,6 +558,10 @@ func tearDown(
 	}
 
 	if err := runner.RunInSequence(pushWorkflow.TearDown(pushCmdGenerator)...); err != nil {
+		logBufferedRunnerFailure(logger, "push workflow teardown", err, runnerOutBuf, runnerErrBuf)
+	}
+
+	if err := runner.RunInSequence(winPushWorkflow.TearDown(winPushCmdGenerator)...); err != nil {
 		logBufferedRunnerFailure(logger, "push workflow teardown", err, runnerOutBuf, runnerErrBuf)
 	}
 
